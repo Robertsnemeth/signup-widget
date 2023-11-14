@@ -1,70 +1,89 @@
 import NextAuth from "next-auth";
+import { prisma } from "@/lib/prisma";
 import { PrismaAdapter } from "@next-auth/prisma-adapter";
+import { compare } from "bcryptjs";
 import CredentialsProvider from "next-auth/providers/credentials";
-import prisma from "../../../lib/prisma";
+import GitHubProvider from "next-auth/providers/github";
+import GoogleProvider from "next-auth/providers/google";
 
-    const options = {
+export const authOptions = {
+  // This is a temporary fix for prisma client.
+  // @see https://github.com/prisma/prisma/issues/16117
+    adapter: PrismaAdapter,
+    pages: {
+        signIn: "/login",
+    },
+    session: {
+        strategy: "jwt",
+    },
     providers: [
+        GoogleProvider({
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        }),
+        GitHubProvider({
+        clientId: process.env.GITHUB_ID,
+        clientSecret: process.env.GITHUB_SECRET,
+        }),
         CredentialsProvider({
-        id: "credentials",
-        name: "Credentials",
-        async authorize(credentials, req) {
-            const userCredentials = {
-            email: credentials.email,
-            password: credentials.password,
-            };
-
-            const res = await fetch(
-            `http://localhost:3000/api/user/login`,
-            {
-                method: "POST",
-                body: JSON.stringify(userCredentials),
-                headers: {
-                "Content-Type": "application/json",
-                },
-            }
-            );
-            const user = await res.json();
-
-            if (res.ok && user) {
-            return user;
-            } else {
+        name: "Sign in",
+        credentials: {
+            email: {
+            label: "Email",
+            type: "email",
+            placeholder: "example@example.com",
+            },
+            password: { label: "Password", type: "password" },
+        },
+        async authorize(credentials) {
+            console.log("credentials", credentials)
+            if (!credentials?.email || !credentials.password) {
             return null;
             }
+
+            const user = await prisma.user.findUnique({
+            where: {
+                id: credentials.id,
+            },
+            });
+            console.log("user", user)
+            if (!user || !(await compare(credentials.password, !user.password))) {
+            return null;
+            }
+
+            return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            randomKey: "Hey cool",
+            };
         },
         }),
     ],
-
-    adapter: PrismaAdapter(prisma),
-    secret: process.env.NEXTAUTH_SECRET,
-    session: { strategy: "jwt", maxAge: 24 * 60 * 60 },
-
-    jwt: {
-        secret: process.env.NEXTAUTH_SECRET,
-        maxAge: 60 * 60 * 24 * 30,
-        encryption: true,
-    },
-
-    pages: {
-        signIn: "/login",
-        signOut: "/login",
-        error: "/login",
-    },
-
     callbacks: {
-        async session(session, user, token) {
-        if (user !== null) {
-            session.user = user;
-        }
-        return await session;
+        session: ({ session, token }) => {
+        return {
+            ...session,
+            user: {
+            ...session.user,
+            id: token.id,
+            randomKey: token.randomKey,
+            },
+        };
         },
-
-        async jwt({ token, user }) {
-        return await token;
+        jwt: ({ token, user }) => {
+        if (user) {
+            const u = user;
+            return {
+            ...token,
+            id: u.id,
+            randomKey: u.randomKey,
+            };
+        }
+        return token;
         },
     },
-    };
+};
 
-    export const handler =  NextAuth(req, res, options);
-
-    export {handler as GET, handler as POST};
+const handler = NextAuth(authOptions);
+export { handler as GET, handler as POST };
